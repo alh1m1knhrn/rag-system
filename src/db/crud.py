@@ -104,3 +104,39 @@ def clear_all_user_data(db: Session, user_id: str):
     clear_visited_topics(db, user_id)
     clear_completed_tasks(db, user_id)
     clear_current_task(db, user_id)
+
+
+# ==================== Результаты викторины ====================
+
+def save_quiz_result(db: Session, user_id: str, nickname: str, score: int, time_seconds: int):
+    from src.db.models import QuizResult
+    result = QuizResult(
+        user_id=user_id,
+        nickname=nickname,
+        score=score,
+        time_seconds=time_seconds
+    )
+    db.add(result)
+    db.commit()
+
+
+def get_quiz_leaderboard(db: Session, limit: int = 10):
+    from src.db.models import QuizResult
+    from sqlalchemy import func
+
+    # Лучший результат по каждому нику
+    results = (
+        db.query(QuizResult)
+        .order_by(QuizResult.score.desc(), QuizResult.time_seconds.asc())
+        .all()
+    )
+
+    seen = set()
+    leaderboard = []
+    for r in results:
+        if r.nickname not in seen:
+            seen.add(r.nickname)
+            leaderboard.append((r.nickname, r.score, r.time_seconds))
+            if len(leaderboard) >= limit:
+                break
+    return leaderboard

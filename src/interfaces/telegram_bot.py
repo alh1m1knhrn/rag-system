@@ -18,6 +18,8 @@ from src.rag.chain import build_rag_chain
 from src.config import BOT_TOKEN, GROQ_API_KEY, GROQ_MODEL
 from src.code_executor.executor import execute_code, UnsafeCodeError
 from tasks import TASKS, TOPICS_ORDER
+from src.quiz.questions import QUESTIONS
+import random
 from langchain_openai import ChatOpenAI
 
 from src.db.database import SessionLocal, init_db
@@ -31,8 +33,13 @@ dp = Dispatcher()
 
 rag_chain = None
 
-TEXTBOOK_PATH = ROOT_DIR / "data" / "textbook.docx"
+# Состояние квиза
+# {user_id: {"questions": [...], "index": 0, "score": 0, "wrong_topics": set(), "nickname": str, "start_time": float}}
+quiz_sessions = {}
+# Ожидание ника: {user_id: True}
+waiting_for_nickname = {}
 
+TEXTBOOK_PATH = ROOT_DIR / "data" / "textbook.docx"
 
 TOPICS = {
     "ch2": ("Глава 1. Переменные и простые типы данных", "Что такое переменные в Python? Как работать со строками, числами, списками и другими простыми типами данных?"),
@@ -50,8 +57,10 @@ main_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="❓ Задать вопрос"), KeyboardButton(text="💻 Выполнить код")],
         [KeyboardButton(text="📚 Разделы"), KeyboardButton(text="📝 Задачи")],
-        [KeyboardButton(text="📥 Скачать учебник"), KeyboardButton(text="🧹 Очистить историю")],
-        [KeyboardButton(text="ℹ️ Помощь")],
+        [KeyboardButton(text="🍀 Испытать удачу"), KeyboardButton(text="🏆 Топ викторины")],
+        [KeyboardButton(text="📥 Скачать учебник"), KeyboardButton(text="🗑️ Очистить контекст")],
+        [KeyboardButton(text="🔄 Сбросить прогресс"), KeyboardButton(text="ℹ️ Помощь")],
+
     ],
     resize_keyboard=True
 )
@@ -117,28 +126,46 @@ async def cmd_help(message: Message):
         "• «📝 Задачи» — выбери тему и задачу, пришли решение кодом.\n"
         "• «💻 Выполнить код» — просто запустит код.\n"
         "• «📥 Скачать учебник» — получишь Word-файл.\n"
-        "• «🧹 Очистить историю» — сбросит контекст и отметки.",
+        "• «🍀 Испытать удачу» — викторина из 10 случайных вопросов.\n"
+        "• «🗑️ Очистить контекст» — сбросит только историю диалога.\n"
+        "• «🔄 Сбросить прогресс» — уберёт галочки глав и задач.",
         parse_mode=ParseMode.HTML,
         reply_markup=main_kb
     )
 
 
-@dp.message(F.text == "🧹 Очистить историю")
-@dp.message(Command("clear"))
-async def cmd_clear(message: Message):
+@dp.message(F.text == "🗑️ Очистить контекст")
+@dp.message(Command("clear_context"))
+async def cmd_clear_context(message: Message):
     user_id = str(message.from_user.id)
     db = SessionLocal()
     try:
-        crud.clear_all_user_data(db, user_id)
+        crud.clear_chat_history(db, user_id)
     finally:
         db.close()
-    await message.answer("🧹 История диалога, отметки глав и выполненных задач очищены.", reply_markup=main_kb)
+    await message.answer("🗑️ История диалога очищена. Прогресс сохранён.", reply_markup=main_kb)
+
+
+@dp.message(F.text == "🔄 Сбросить прогресс")
+@dp.message(Command("reset_progress"))
+async def cmd_reset_progress(message: Message):
+    user_id = str(message.from_user.id)
+    db = SessionLocal()
+    try:
+        crud.clear_visited_topics(db, user_id)
+        crud.clear_completed_tasks(db, user_id)
+        crud.clear_current_task(db, user_id)
+    finally:
+        db.close()
+    await message.answer("🔄 Прогресс сброшен (галочки глав и задач убраны). История диалога сохранена.",
+                         reply_markup=main_kb)
 
 
 @dp.message(F.text == "📥 Скачать учебник")
 async def send_textbook(message: Message):
     if not TEXTBOOK_PATH.exists():
-        await message.answer("⚠️ Файл учебника не найден.\nПоложи `textbook.docx` в папку `data/`.", reply_markup=main_kb)
+        await message.answer("⚠️ Файл учебника не найден.\nПоложи `textbook.docx` в папку `data/`.",
+                             reply_markup=main_kb)
         return
     await message.answer("Отправляю учебник...")
     document = FSInputFile(TEXTBOOK_PATH)
@@ -232,11 +259,12 @@ async def process_topic(callback: CallbackQuery):
         await callback.message.answer(answer, parse_mode=None, reply_markup=main_kb)
     except Exception as e:
         logger.error(f"Topic error: {e}")
-        await callback.message.answer("⚠️ Не удалось получить информацию по главе.", reply_markup=main_kb)
+        await callback.message.answer("⚠️ Не удалось получить информацию по главе.попробуйте нажать кнопку очистить контекст", reply_markup=main_kb)
 
 
 # Глобальный LLM для проверки задач
 checker_llm = None
+
 
 def get_checker_llm():
     global checker_llm
@@ -287,10 +315,163 @@ async def cmd_code(message: Message):
     await message.answer("Отправь код, который нужно выполнить.")
 
 
+# ==================== ВИКТОРИНА ====================
+
+def get_quiz_keyboard(options):
+    buttons = []
+    for i, opt in enumerate(options):
+        buttons.append([InlineKeyboardButton(text=opt, callback_data=f"quiz_{i}")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+@dp.message(F.text == "🍀 Испытать удачу")
+async def start_quiz(message: Message):
+    user_id = str(message.from_user.id)
+    waiting_for_nickname[user_id] = True
+    await message.answer(
+        "Введи ник для топа (только латинские буквы и цифры, 3–15 символов):",
+        reply_markup=main_kb
+    )
+
+
+@dp.message(F.text == "🏆 Топ викторины")
+async def show_leaderboard(message: Message):
+    db = SessionLocal()
+    try:
+        rows = crud.get_quiz_leaderboard(db, limit=10)
+    finally:
+        db.close()
+
+    if not rows:
+        await message.answer("Топ пока пуст. Будь первым!", reply_markup=main_kb)
+        return
+
+    lines = ["🏆 <b>Топ викторины</b>\n"]
+    for i, (nick, score, t) in enumerate(rows, 1):
+        mins, secs = divmod(t, 60)
+        time_str = f"{mins}:{secs:02d}" if mins else f"{secs} сек"
+        lines.append(f"{i}. {nick} — {score}/10 ({time_str})")
+
+    await message.answer("\n".join(lines), parse_mode=ParseMode.HTML, reply_markup=main_kb)
+
+
+async def send_quiz_question(message_or_callback, user_id: str, edit: bool = False):
+    session = quiz_sessions.get(user_id)
+    if not session:
+        return
+
+    idx = session["index"]
+    if idx >= 10:
+        await finish_quiz(message_or_callback, user_id)
+        return
+
+    q = session["questions"][idx]
+    text = f"Вопрос {idx + 1}/10\n\n{q['q']}"
+    kb = get_quiz_keyboard(q["options"])
+
+    if edit and hasattr(message_or_callback, "message"):
+        await message_or_callback.message.edit_text(text, reply_markup=kb)
+    else:
+        await message_or_callback.answer(text, reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("quiz_"))
+async def handle_quiz_answer(callback: CallbackQuery):
+    user_id = str(callback.from_user.id)
+    session = quiz_sessions.get(user_id)
+    if not session:
+        await callback.answer("Викторина не активна")
+        return
+
+    choice = int(callback.data.replace("quiz_", ""))
+    q = session["questions"][session["index"]]
+    correct = q["correct"]
+
+    if choice == correct:
+        session["score"] += 1
+        await callback.answer("✅ Правильно!")
+    else:
+        session["wrong_topics"].add(q["topic"])
+        correct_text = q["options"][correct]
+        await callback.answer(f"❌ Неправильно. Верный ответ: {correct_text}", show_alert=True)
+
+    session["index"] += 1
+    await send_quiz_question(callback, user_id, edit=True)
+
+
+async def finish_quiz(message_or_callback, user_id: str):
+    session = quiz_sessions.pop(user_id, None)
+    if not session:
+        return
+
+    # Считаем время
+    import time
+    elapsed = int(time.time() - session.get("start_time", time.time()))
+
+    # Сохраняем результат
+    db = SessionLocal()
+    try:
+        crud.save_quiz_result(
+            db,
+            user_id=user_id,
+            nickname=session.get("nickname", "Аноним"),
+            score=session["score"],
+            time_seconds=elapsed
+        )
+        # Очищаем контекст
+        crud.clear_chat_history(db, user_id)
+    finally:
+        db.close()
+
+    score = session["score"]
+    wrong = session["wrong_topics"]
+
+    text = f"🏁 Викторина завершена!\n\nРезультат: {score}/10"
+
+    if wrong:
+        topics = ", ".join(sorted(wrong))
+        text += f"\n\n📚 Стоит подтянуть темы:\n{topics}"
+    else:
+        text += "\n\n🎉 Отлично! Все темы на хорошем уровне."
+
+    if hasattr(message_or_callback, "message"):
+        await message_or_callback.message.edit_text(text)
+        await message_or_callback.message.answer("Можешь начать новую викторину или продолжить обучение.",
+                                                 reply_markup=main_kb)
+    else:
+        await message_or_callback.answer(text, reply_markup=main_kb)
+
+
 @dp.message(F.text)
 async def handle_message(message: Message):
     text = message.text.strip()
     user_id = str(message.from_user.id)
+
+    # Ожидание ника для викторины
+    if user_id in waiting_for_nickname:
+        import re
+        if re.fullmatch(r"[A-Za-z0-9]{3,15}", text):
+            waiting_for_nickname.pop(user_id, None)
+            n = min(10, len(QUESTIONS))
+            if n == 0:
+                await message.answer("В базе нет вопросов.", reply_markup=main_kb)
+                return
+            selected = random.sample(QUESTIONS, n)
+            import time
+            quiz_sessions[user_id] = {
+                "questions": selected,
+                "index": 0,
+                "score": 0,
+                "wrong_topics": set(),
+                "nickname": text,
+                "start_time": time.time()
+            }
+            await message.answer(f"Ник принят: {text}\nНачинаем викторину!")
+            await send_quiz_question(message, user_id)
+        else:
+            await message.answer(
+                "Ник должен содержать только латинские буквы и цифры (3–15 символов). Попробуй ещё раз:")
+        return
 
     # Если у пользователя активна задача — проверяем решение
     db = SessionLocal()
@@ -342,7 +523,8 @@ async def handle_message(message: Message):
         return
 
     # Обычное выполнение кода
-    if text.startswith("/code") or (len(text) > 15 and any(k in text for k in ("print(", "def ", "for ", "if ", "while "))):
+    if text.startswith("/code") or (
+            len(text) > 15 and any(k in text for k in ("print(", "def ", "for ", "if ", "while "))):
         code = text.replace("/code", "", 1).strip().strip("`")
         if code.startswith("python"):
             code = code[6:].strip()

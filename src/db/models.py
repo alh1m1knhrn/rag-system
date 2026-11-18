@@ -47,3 +47,15 @@ class UserState(Base):
 
     user_id = Column(String, primary_key=True)
     current_task_key = Column(String, nullable=True)
+
+
+class QuizResult(Base):
+    """Результаты викторины для топа."""
+    __tablename__ = "quiz_results"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String, index=True, nullable=False)
+    nickname = Column(String, nullable=False)
+    score = Column(Integer, nullable=False)          # 0-10
+    time_seconds = Column(Integer, nullable=False)   # время прохождения
+    created_at = Column(DateTime, default=datetime.utcnow)
