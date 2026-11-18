@@ -39,7 +39,7 @@ def build_rag_chain(db_directory: str = None):
         api_key=GROQ_API_KEY,
         base_url="https://api.groq.com/openai/v1",
         temperature=0.2,
-        max_tokens=1024,
+        max_tokens=2048,
     )
 
     print("4. Собираем цепочку с историей...")
@@ -48,31 +48,43 @@ def build_rag_chain(db_directory: str = None):
     condense_chain = CONDENSE_QUESTION_PROMPT | llm | StrOutputParser()
 
     def contextualize_question(inputs):
-        if not inputs.get("chat_history"):
-            return inputs["question"]
+        chat_history = inputs.get("chat_history") or []
+        question = inputs["question"]
 
-        new_question = condense_chain.invoke({
-            "question": inputs["question"],
-            "chat_history": inputs["chat_history"]
-        }).strip()
+        # Ограничиваем историю последними 4 сообщениями
+        if len(chat_history) > 4:
+            chat_history = chat_history[-4:]
 
-        # Убираем лишние кавычки
-        new_question = new_question.replace('"', '').replace("'", "").strip()
+        if not chat_history:
+            return question
 
-        # Детектор галлюцинаций / плохой переформулировки
-        if len(new_question) > 120 or "```" in new_question or "Конечно" in new_question or "Ответ:" in new_question:
-            print(f"⚠️ [Отладка] Плохая переформулировка. Используем ручной режим.")
-            previous_question = ""
-            for msg in reversed(inputs.get("chat_history", [])):
-                if msg.type == "human":
-                    previous_question = msg.content
-                    break
-            combined = f"{previous_question} {inputs['question']}".strip()
-            print(f"🔄 [Отладка] Ищем по: '{combined}'")
-            return combined
+        try:
+            new_question = condense_chain.invoke({
+                "question": question,
+                "chat_history": chat_history
+            }).strip()
 
-        print(f"🔄 [Отладка] Ищем по: '{new_question}'")
-        return new_question
+            # Чистим ответ
+            new_question = new_question.replace('"', '').replace("'", "").replace("`", "").strip()
+            # Убираем возможные префиксы
+            for prefix in ("Вопрос:", "Переформулированный вопрос:", "Ответ:"):
+                if new_question.startswith(prefix):
+                    new_question = new_question[len(prefix):].strip()
+
+            # Если переформулировка слишком длинная или подозрительная — берём оригинал
+            if (len(new_question) > 150 or
+                len(new_question) < 5 or
+                "```" in new_question or
+                new_question.lower().startswith(("конечно", "ответ", "вот"))):
+                print(f"⚠️ [Отладка] Плохая переформулировка, используем оригинал: '{question}'")
+                return question
+
+            print(f"🔄 [Отладка] Ищем по: '{new_question}'")
+            return new_question
+
+        except Exception as e:
+            print(f"⚠️ Ошибка переформулировки: {e}, используем оригинал")
+            return question
 
     rag_chain = (
         RunnablePassthrough.assign(
