@@ -14,7 +14,7 @@ from aiogram.types import (
 )
 from aiogram.enums import ParseMode
 
-from src.rag.chain import build_rag_chain, clear_session_history
+from src.rag.chain import build_rag_chain
 from src.config import BOT_TOKEN, GROQ_API_KEY, GROQ_MODEL
 from src.code_executor.executor import execute_code, UnsafeCodeError
 from tasks import TASKS, TOPICS_ORDER
@@ -121,30 +121,24 @@ async def cmd_help(message: Message):
         "• «📝 Задачи» — выбери тему и задачу, пришли решение кодом.\n"
         "• «💻 Выполнить код» — просто запустит код.\n"
         "• «📥 Скачать учебник» — получишь Word-файл.\n"
-        "• «🗑️ Очистить контекст» — сбросит историю диалога.\n"
-        "• «🔄 Сбросить прогресс» — уберёт все галочки с разделов и задач.",
+        "• «🧹 Очистить историю» — сбросит контекст и отметки.",
         parse_mode=ParseMode.HTML,
         reply_markup=main_kb
     )
 
 
-@dp.message(F.text == "🗑️ Очистить контекст")
+@dp.message(F.text == "🧹 Очистить историю")
 @dp.message(Command("clear"))
-async def cmd_clear_context(message: Message):
+async def cmd_clear(message: Message):
     user_id = str(message.from_user.id)
-    clear_session_history(user_id)
-    current_task.pop(user_id, None)
-    await message.answer("🗑️ Контекст диалога очищен.", reply_markup=main_kb)
-
-
-@dp.message(F.text == "🔄 Сбросить прогресс")
-async def cmd_reset_progress(message: Message):
-    user_id = str(message.from_user.id)
+    if user_id in session_store:
+        session_store[user_id].clear()
     if user_id in visited_topics:
         visited_topics[user_id].clear()
+    current_task.pop(user_id, None)
     if user_id in completed_tasks:
         completed_tasks[user_id].clear()
-    await message.answer("🔄 Прогресс по разделам и задачам сброшен.", reply_markup=main_kb)
+    await message.answer("🧹 История диалога, отметки глав и выполненных задач очищены.", reply_markup=main_kb)
 
 
 @dp.message(F.text == "📥 Скачать учебник")
@@ -195,10 +189,6 @@ async def show_task(callback: CallbackQuery):
         return
 
     current_task[user_id] = task_key
-
-    # Очищаем контекст при выборе задачи
-    clear_session_history(user_id)
-
     text = (
         f"📝 <b>{task['title']}</b>\n\n"
         f"{task['description']}\n\n"
@@ -234,9 +224,8 @@ async def process_topic(callback: CallbackQuery):
     await callback.message.answer(f"📖 <b>{topic_title}</b>\n\nИщу информацию в учебнике...", parse_mode=ParseMode.HTML)
     await bot.send_chat_action(chat_id=callback.message.chat.id, action="typing")
 
-    # Автоматически очищаем контекст при выборе раздела
-    clear_session_history(user_id)
-    current_task.pop(user_id, None)
+    if user_id in session_store:
+        session_store[user_id].clear()
 
     try:
         config = {"configurable": {"session_id": user_id}}
@@ -303,14 +292,6 @@ async def cmd_code(message: Message):
 async def handle_message(message: Message):
     text = message.text.strip()
     user_id = str(message.from_user.id)
-
-    # Игнорируем нажатия на кнопки меню (они обрабатываются отдельно)
-    menu_buttons = {
-        "❓ Задать вопрос", "💻 Выполнить код", "📚 Разделы", "📝 Задачи",
-        "📥 Скачать учебник", "🗑️ Очистить контекст", "🔄 Сбросить прогресс", "ℹ️ Помощь"
-    }
-    if text in menu_buttons:
-        return
 
     # Если у пользователя активна задача — проверяем решение
     if user_id in current_task:

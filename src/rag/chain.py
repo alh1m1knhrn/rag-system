@@ -11,21 +11,6 @@ from langchain_core.chat_history import InMemoryChatMessageHistory
 from src.rag.prompts import PROMPT_TEMPLATE, CONDENSE_QUESTION_PROMPT
 from src.config import GROQ_API_KEY, GROQ_MODEL, CHROMA_DB_PATH
 
-# Общее хранилище истории
-history_store = {}
-
-
-def get_session_history(session_id: str):
-    if session_id not in history_store:
-        history_store[session_id] = InMemoryChatMessageHistory()
-    return history_store[session_id]
-
-
-def clear_session_history(session_id: str):
-    """Очищает историю диалога пользователя."""
-    if session_id in history_store:
-        history_store[session_id].clear()
-
 
 def format_docs(docs):
     formatted = []
@@ -101,6 +86,14 @@ def build_rag_chain(db_directory: str = None):
         | llm
         | StrOutputParser()
     )
+
+    # Хранилище истории (в памяти)
+    store = {}
+
+    def get_session_history(session_id: str):
+        if session_id not in store:
+            store[session_id] = InMemoryChatMessageHistory()
+        return store[session_id]
 
     conversational_rag_chain = RunnableWithMessageHistory(
         rag_chain,
