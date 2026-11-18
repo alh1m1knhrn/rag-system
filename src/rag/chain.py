@@ -6,10 +6,10 @@ from langchain_chroma import Chroma
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.runnables.history import RunnableWithMessageHistory
-from langchain_core.chat_history import InMemoryChatMessageHistory
 
 from src.rag.prompts import PROMPT_TEMPLATE, CONDENSE_QUESTION_PROMPT
 from src.config import GROQ_API_KEY, GROQ_MODEL, CHROMA_DB_PATH
+from src.db.chat_history import SQLChatMessageHistory
 
 
 def format_docs(docs):
@@ -87,13 +87,8 @@ def build_rag_chain(db_directory: str = None):
         | StrOutputParser()
     )
 
-    # Хранилище истории (в памяти)
-    store = {}
-
     def get_session_history(session_id: str):
-        if session_id not in store:
-            store[session_id] = InMemoryChatMessageHistory()
-        return store[session_id]
+        return SQLChatMessageHistory(session_id)
 
     conversational_rag_chain = RunnableWithMessageHistory(
         rag_chain,
@@ -107,6 +102,9 @@ def build_rag_chain(db_directory: str = None):
 
 # Тестовый запуск
 if __name__ == "__main__":
+    from src.db.database import init_db
+    init_db()
+
     chain = build_rag_chain()
 
     session_id = "student_1"

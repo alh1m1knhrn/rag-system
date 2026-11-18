@@ -1,0 +1,106 @@
+from typing import List, Set, Optional
+from sqlalchemy.orm import Session
+from sqlalchemy import delete
+
+from src.db.models import ChatMessage, VisitedTopic, CompletedTask, UserState
+from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
+
+
+# ==================== История диалога ====================
+
+def add_message(db: Session, user_id: str, role: str, content: str):
+    msg = ChatMessage(user_id=user_id, role=role, content=content)
+    db.add(msg)
+    db.commit()
+
+
+def get_chat_history(db: Session, user_id: str, limit: int = 20) -> List[BaseMessage]:
+    """Возвращает последние сообщения в формате LangChain."""
+    rows = (
+        db.query(ChatMessage)
+        .filter(ChatMessage.user_id == user_id)
+        .order_by(ChatMessage.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    rows.reverse()  # хронологический порядок
+    messages = []
+    for row in rows:
+        if row.role == "human":
+            messages.append(HumanMessage(content=row.content))
+        else:
+            messages.append(AIMessage(content=row.content))
+    return messages
+
+
+def clear_chat_history(db: Session, user_id: str):
+    db.execute(delete(ChatMessage).where(ChatMessage.user_id == user_id))
+    db.commit()
+
+
+# ==================== Прогресс по главам ====================
+
+def mark_topic_visited(db: Session, user_id: str, topic_key: str):
+    exists = db.query(VisitedTopic).filter_by(user_id=user_id, topic_key=topic_key).first()
+    if not exists:
+        db.add(VisitedTopic(user_id=user_id, topic_key=topic_key))
+        db.commit()
+
+
+def get_visited_topics(db: Session, user_id: str) -> Set[str]:
+    rows = db.query(VisitedTopic.topic_key).filter_by(user_id=user_id).all()
+    return {r[0] for r in rows}
+
+
+def clear_visited_topics(db: Session, user_id: str):
+    db.execute(delete(VisitedTopic).where(VisitedTopic.user_id == user_id))
+    db.commit()
+
+
+# ==================== Выполненные задачи ====================
+
+def mark_task_completed(db: Session, user_id: str, task_key: str):
+    exists = db.query(CompletedTask).filter_by(user_id=user_id, task_key=task_key).first()
+    if not exists:
+        db.add(CompletedTask(user_id=user_id, task_key=task_key))
+        db.commit()
+
+
+def get_completed_tasks(db: Session, user_id: str) -> Set[str]:
+    rows = db.query(CompletedTask.task_key).filter_by(user_id=user_id).all()
+    return {r[0] for r in rows}
+
+
+def clear_completed_tasks(db: Session, user_id: str):
+    db.execute(delete(CompletedTask).where(CompletedTask.user_id == user_id))
+    db.commit()
+
+
+# ==================== Текущая задача ====================
+
+def set_current_task(db: Session, user_id: str, task_key: Optional[str]):
+    state = db.query(UserState).filter_by(user_id=user_id).first()
+    if state:
+        state.current_task_key = task_key
+    else:
+        state = UserState(user_id=user_id, current_task_key=task_key)
+        db.add(state)
+    db.commit()
+
+
+def get_current_task(db: Session, user_id: str) -> Optional[str]:
+    state = db.query(UserState).filter_by(user_id=user_id).first()
+    return state.current_task_key if state else None
+
+
+def clear_current_task(db: Session, user_id: str):
+    set_current_task(db, user_id, None)
+
+
+# ==================== Полная очистка пользователя ====================
+
+def clear_all_user_data(db: Session, user_id: str):
+    clear_chat_history(db, user_id)
+    clear_visited_topics(db, user_id)
+    clear_completed_tasks(db, user_id)
+    clear_current_task(db, user_id)

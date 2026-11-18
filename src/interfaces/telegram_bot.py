@@ -20,6 +20,9 @@ from src.code_executor.executor import execute_code, UnsafeCodeError
 from tasks import TASKS, TOPICS_ORDER
 from langchain_openai import ChatOpenAI
 
+from src.db.database import SessionLocal, init_db
+from src.db import crud
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -28,22 +31,7 @@ dp = Dispatcher()
 
 rag_chain = None
 
-from langchain_core.chat_history import InMemoryChatMessageHistory
-session_store = {}
-
-visited_topics = {}
-# Текущая задача пользователя: {user_id: task_key}
-current_task = {}
-# Выполненные задачи: {user_id: set(task_keys)}
-completed_tasks = {}
-
 TEXTBOOK_PATH = ROOT_DIR / "data" / "textbook.docx"
-
-
-def get_session_history(session_id: str):
-    if session_id not in session_store:
-        session_store[session_id] = InMemoryChatMessageHistory()
-    return session_store[session_id]
 
 
 TOPICS = {
@@ -70,7 +58,11 @@ main_kb = ReplyKeyboardMarkup(
 
 
 def get_topics_keyboard(user_id: str, highlight_key: str = None):
-    visited = visited_topics.get(user_id, set())
+    db = SessionLocal()
+    try:
+        visited = crud.get_visited_topics(db, user_id)
+    finally:
+        db.close()
     buttons = []
     for key, (title, _) in TOPICS.items():
         short_title = title.replace("Глава ", "Гл. ")
@@ -90,7 +82,11 @@ def get_task_topics_keyboard():
 
 
 def get_tasks_keyboard(topic: str, user_id: str):
-    completed = completed_tasks.get(user_id, set())
+    db = SessionLocal()
+    try:
+        completed = crud.get_completed_tasks(db, user_id)
+    finally:
+        db.close()
     buttons = []
     for key, task in TASKS.items():
         if task["topic"] == topic:
@@ -131,13 +127,11 @@ async def cmd_help(message: Message):
 @dp.message(Command("clear"))
 async def cmd_clear(message: Message):
     user_id = str(message.from_user.id)
-    if user_id in session_store:
-        session_store[user_id].clear()
-    if user_id in visited_topics:
-        visited_topics[user_id].clear()
-    current_task.pop(user_id, None)
-    if user_id in completed_tasks:
-        completed_tasks[user_id].clear()
+    db = SessionLocal()
+    try:
+        crud.clear_all_user_data(db, user_id)
+    finally:
+        db.close()
     await message.answer("🧹 История диалога, отметки глав и выполненных задач очищены.", reply_markup=main_kb)
 
 
@@ -188,7 +182,11 @@ async def show_task(callback: CallbackQuery):
         await callback.answer("Задача не найдена")
         return
 
-    current_task[user_id] = task_key
+    db = SessionLocal()
+    try:
+        crud.set_current_task(db, user_id, task_key)
+    finally:
+        db.close()
     text = (
         f"📝 <b>{task['title']}</b>\n\n"
         f"{task['description']}\n\n"
@@ -211,9 +209,11 @@ async def process_topic(callback: CallbackQuery):
     except Exception:
         pass
 
-    if user_id not in visited_topics:
-        visited_topics[user_id] = set()
-    visited_topics[user_id].add(topic_key)
+    db = SessionLocal()
+    try:
+        crud.mark_topic_visited(db, user_id, topic_key)
+    finally:
+        db.close()
 
     try:
         await callback.message.edit_reply_markup(reply_markup=get_topics_keyboard(user_id))
@@ -224,8 +224,7 @@ async def process_topic(callback: CallbackQuery):
     await callback.message.answer(f"📖 <b>{topic_title}</b>\n\nИщу информацию в учебнике...", parse_mode=ParseMode.HTML)
     await bot.send_chat_action(chat_id=callback.message.chat.id, action="typing")
 
-    if user_id in session_store:
-        session_store[user_id].clear()
+    # История теперь в БД, очищается только по кнопке
 
     try:
         config = {"configurable": {"session_id": user_id}}
@@ -294,8 +293,13 @@ async def handle_message(message: Message):
     user_id = str(message.from_user.id)
 
     # Если у пользователя активна задача — проверяем решение
-    if user_id in current_task:
-        task_key = current_task[user_id]
+    db = SessionLocal()
+    try:
+        task_key = crud.get_current_task(db, user_id)
+    finally:
+        db.close()
+
+    if task_key:
         await message.answer("🔍 Проверяю решение...")
         await bot.send_chat_action(chat_id=message.chat.id, action="typing")
 
@@ -314,11 +318,17 @@ async def handle_message(message: Message):
 
         # Если решение правильное — отмечаем как выполненное
         if "Правильно" in verdict and "Неправильно" not in verdict:
-            if user_id not in completed_tasks:
-                completed_tasks[user_id] = set()
-            completed_tasks[user_id].add(task_key)
+            db = SessionLocal()
+            try:
+                crud.mark_task_completed(db, user_id, task_key)
+            finally:
+                db.close()
 
-        current_task.pop(user_id, None)
+        db = SessionLocal()
+        try:
+            crud.set_current_task(db, user_id, None)
+        finally:
+            db.close()
         return
 
     # Обычное выполнение кода
@@ -363,6 +373,8 @@ async def handle_message(message: Message):
 
 async def main():
     global rag_chain
+    logger.info("Инициализация базы данных...")
+    init_db()
     logger.info("Загружаем RAG...")
     rag_chain = build_rag_chain()
     logger.info("Бот запущен.")
