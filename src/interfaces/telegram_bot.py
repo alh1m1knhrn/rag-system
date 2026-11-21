@@ -498,9 +498,8 @@ async def admin_broadcast(message: Message):
     text = parts[1]
     db = SessionLocal()
     try:
-        # Берём уникальных пользователей из истории
-        from src.db.models import ChatMessage
-        user_ids = {row[0] for row in db.query(ChatMessage.user_id).distinct().all()}
+        users = crud.get_all_users(db)
+        user_ids = [u.user_id for u in users]
     finally:
         db.close()
 
