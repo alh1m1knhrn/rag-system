@@ -59,3 +59,14 @@ class QuizResult(Base):
     score = Column(Integer, nullable=False)          # 0-10
     time_seconds = Column(Integer, nullable=False)   # время прохождения
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class BotUser(Base):
+    """Пользователи бота (сохраняются навсегда)."""
+    __tablename__ = "bot_users"
+
+    user_id = Column(String, primary_key=True)
+    username = Column(String, nullable=True)
+    first_name = Column(String, nullable=True)
+    last_name = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)

@@ -19,3 +19,6 @@ if not BOT_TOKEN:
 
 # Пути
 CHROMA_DB_PATH = os.getenv("CHROMA_DB_PATH", str(BASE_DIR / "data" / "chroma_db"))
+
+# Админ
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))

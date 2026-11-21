@@ -140,3 +140,26 @@ def get_quiz_leaderboard(db: Session, limit: int = 10):
             if len(leaderboard) >= limit:
                 break
     return leaderboard
+
+
+def upsert_user(db: Session, user_id: str, username: str = None, first_name: str = None, last_name: str = None):
+    from src.db.models import BotUser
+    user = db.query(BotUser).filter_by(user_id=user_id).first()
+    if user:
+        user.username = username
+        user.first_name = first_name
+        user.last_name = last_name
+    else:
+        user = BotUser(
+            user_id=user_id,
+            username=username,
+            first_name=first_name,
+            last_name=last_name
+        )
+        db.add(user)
+    db.commit()
+
+
+def get_all_users(db: Session):
+    from src.db.models import BotUser
+    return db.query(BotUser).order_by(BotUser.created_at).all()

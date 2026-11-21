@@ -15,7 +15,7 @@ from aiogram.types import (
 from aiogram.enums import ParseMode
 
 from src.rag.chain import build_rag_chain
-from src.config import BOT_TOKEN, GROQ_API_KEY, GROQ_MODEL
+from src.config import BOT_TOKEN, GROQ_API_KEY, GROQ_MODEL, ADMIN_ID
 from src.code_executor.executor import execute_code, UnsafeCodeError
 from tasks import TASKS, TOPICS_ORDER
 from src.quiz.questions import QUESTIONS
@@ -42,15 +42,25 @@ waiting_for_nickname = {}
 TEXTBOOK_PATH = ROOT_DIR / "data" / "textbook.docx"
 
 TOPICS = {
-    "ch2": ("Глава 1. Переменные и простые типы данных", "Что такое переменные в Python? Как работать со строками, числами, списками и другими простыми типами данных?"),
-    "ch3": ("Глава 2. Списки", "Что такое списки в Python? Как создавать списки, обращаться к элементам по индексу, изменять, добавлять и удалять элементы?"),
-    "ch4": ("Глава 3. Работа со списками", "Как перебирать списки в цикле for? Как создавать числовые списки с помощью range? Что такое срезы списков?"),
-    "ch5": ("Глава 4. Команды if", "Как работают условные операторы if, elif и else в Python? Как проверять условия и использовать их со списками?"),
-    "ch6": ("Глава 5. Словари", "Что такое словари в Python? Как создавать словари, обращаться к значениям по ключам, перебирать словари и вкладывать их?"),
-    "ch7": ("Глава 6. Ввод данных и циклы while", "Как работает функция input()? Как использовать циклы while? Как применять while со списками и словарями?"),
-    "ch8": ("Глава 7. Функции", "Как определять и вызывать функции в Python? Как передавать аргументы, возвращать значения и работать со списками в функциях?"),
-    "ch9": ("Глава 8. Классы", "Что такое классы в Python? Как создавать классы, работать с экземплярами, использовать наследование?"),
-
+    "ch2": ("Глава 2. Переменные и простые типы данных",
+            "Что такое переменные в Python? Как работать со строками, числами, списками и другими простыми типами данных?"),
+    "ch3": ("Глава 3. Списки",
+            "Что такое списки в Python? Как создавать списки, обращаться к элементам по индексу, изменять, добавлять и удалять элементы?"),
+    "ch4": ("Глава 4. Работа со списками",
+            "Как перебирать списки в цикле for? Как создавать числовые списки с помощью range? Что такое срезы списков?"),
+    "ch5": ("Глава 5. Команды if",
+            "Как работают условные операторы if, elif и else в Python? Как проверять условия и использовать их со списками?"),
+    "ch6": ("Глава 6. Словари",
+            "Что такое словари в Python? Как создавать словари, обращаться к значениям по ключам, перебирать словари и вкладывать их?"),
+    "ch7": ("Глава 7. Ввод данных и циклы while",
+            "Как работает функция input()? Как использовать циклы while? Как применять while со списками и словарями?"),
+    "ch8": ("Глава 8. Функции",
+            "Как определять и вызывать функции в Python? Как передавать аргументы, возвращать значения и работать со списками в функциях?"),
+    "ch9": ("Глава 9. Классы",
+            "Что такое классы в Python? Как создавать классы, работать с экземплярами, использовать наследование?"),
+    "ch10": ("Глава 10. Файлы и исключения",
+             "Как читать из файлов и записывать в файлы в Python? Как обрабатывать исключения с помощью try-except?"),
+    "ch11": ("Глава 11. Тестирование", "Как тестировать функции и классы в Python? Как писать тесты?"),
 }
 
 main_kb = ReplyKeyboardMarkup(
@@ -109,6 +119,19 @@ def get_tasks_keyboard(topic: str, user_id: str):
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
+    user = message.from_user
+    db = SessionLocal()
+    try:
+        crud.upsert_user(
+            db,
+            user_id=str(user.id),
+            username=user.username,
+            first_name=user.first_name,
+            last_name=user.last_name
+        )
+    finally:
+        db.close()
+
     await message.answer(
         "👋 Привет! Я — RAG-ассистент по учебнику «Изучаем Python» Эрика Мэтиза.\n\n"
         "Могу отвечать на вопросы, выполнять код, показывать главы, давать задачи и отправлять учебник.",
@@ -259,7 +282,7 @@ async def process_topic(callback: CallbackQuery):
         await callback.message.answer(answer, parse_mode=None, reply_markup=main_kb)
     except Exception as e:
         logger.error(f"Topic error: {e}")
-        await callback.message.answer("⚠️ Не удалось получить информацию по главе.попробуйте нажать кнопку очистить контекст", reply_markup=main_kb)
+        await callback.message.answer("⚠️ Не удалось получить информацию по главе.", reply_markup=main_kb)
 
 
 # Глобальный LLM для проверки задач
@@ -442,10 +465,102 @@ async def finish_quiz(message_or_callback, user_id: str):
         await message_or_callback.answer(text, reply_markup=main_kb)
 
 
+# ==================== АДМИН-КОМАНДЫ ====================
+@dp.message(Command("msg"))
+async def admin_msg(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3:
+        await message.answer("Использование: /msg <user_id> <текст>")
+        return
+
+    try:
+        target_id = int(parts[1])
+        text = parts[2]
+        await bot.send_message(target_id, text)
+        await message.answer(f"✅ Сообщение отправлено пользователю {target_id}")
+    except Exception as e:
+        await message.answer(f"❌ Не удалось отправить: {e}")
+
+
+@dp.message(Command("broadcast"))
+async def admin_broadcast(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("Использование: /broadcast <текст>")
+        return
+
+    text = parts[1]
+    db = SessionLocal()
+    try:
+        # Берём уникальных пользователей из истории
+        from src.db.models import ChatMessage
+        user_ids = {row[0] for row in db.query(ChatMessage.user_id).distinct().all()}
+    finally:
+        db.close()
+
+    if not user_ids:
+        await message.answer("Нет пользователей для рассылки.")
+        return
+
+    sent = 0
+    failed = 0
+    for uid in user_ids:
+        try:
+            await bot.send_message(int(uid), text)
+            sent += 1
+        except Exception:
+            failed += 1
+
+    await message.answer(f"Рассылка завершена.\nОтправлено: {sent}\nНе доставлено: {failed}")
+
+
+@dp.message(Command("users"))
+async def admin_users(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    db = SessionLocal()
+    try:
+        users = crud.get_all_users(db)
+    finally:
+        db.close()
+
+    if not users:
+        await message.answer("Пользователей пока нет.")
+        return
+
+    lines = ["<b>Пользователи:</b>"]
+    for u in users[:50]:
+        username = f"@{u.username}" if u.username else "—"
+        name = u.first_name or ""
+        if u.last_name:
+            name += f" {u.last_name}"
+        lines.append(f"<code>{u.user_id}</code> — {username} ({name})")
+
+    if len(users) > 50:
+        lines.append(f"... и ещё {len(users) - 50}")
+
+    await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
 @dp.message(F.text)
 async def handle_message(message: Message):
     text = message.text.strip()
     user_id = str(message.from_user.id)
+
+    # Сохраняем/обновляем пользователя
+    user = message.from_user
+    db = SessionLocal()
+    try:
+        crud.upsert_user(db, user_id, user.username, user.first_name, user.last_name)
+    finally:
+        db.close()
 
     # Ожидание ника для викторины
     if user_id in waiting_for_nickname:
