@@ -24,3 +24,4 @@ CONDENSE_QUESTION_PROMPT = ChatPromptTemplate.from_messages([
     MessagesPlaceholder(variable_name="chat_history"),
     ("human", "Последний вопрос: {question}"),
 ])
+
